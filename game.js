@@ -232,6 +232,16 @@ let gameRunning = false;
 let gamePaused = false;
 let gameTime = 0;
 
+// ---------------- Enemy Wave Schedule ----------------
+// Initial scripted waves of the basic husk enemy, keyed by time played (seconds)
+const SCHEDULED_WAVES = [
+  { time: 0, count: 3 },
+  { time: 5, count: 10 },
+  { time: 15, count: 20 },
+];
+let nextScheduledWaveIndex = 0;
+let recurringWaveTimer = 5; // countdown until next recurring wave after t=15s
+
 // ---------------- Spawning ----------------
 function spawnEnemy() {
   // spawn just outside the camera view, within world bounds
@@ -251,10 +261,15 @@ function spawnEnemy() {
     x, y, r: 16,
     hp: baseHp, maxHp: baseHp,
     speed: rand(40, 70) + wave * 2,
-    fireCooldown: rand(0.5, 2),
-    fireRate: clamp(2.2 - wave * 0.12, 0.6, 2.2),
+    contactDamage: 10,
     wobble: rand(0, Math.PI * 2),
   });
+}
+
+function spawnEnemyWave(count) {
+  for (let i = 0; i < count; i++) {
+    spawnEnemy();
+  }
 }
 
 // ---------------- Particles (death/hit effects) ----------------
@@ -483,12 +498,21 @@ function update(dt) {
     }
   }
 
-  // ---- Enemy AI ----
-  spawnTimer -= dt;
-  const spawnInterval = clamp(2.2 - wave * 0.15, 0.5, 2.2);
-  if (spawnTimer <= 0 && enemies.length < 6 + wave) {
-    spawnEnemy();
-    spawnTimer = spawnInterval;
+  // ---- Enemy Wave Spawning ----
+  // Scheduled waves: time (seconds played) -> enemy count
+  // wave 1: 0s -> 3, wave 2: 5s -> 10, wave 3: 15s -> 20
+  // from 15s onward: every 5s, a wave of random size 10-30
+  while (nextScheduledWaveIndex < SCHEDULED_WAVES.length &&
+         gameTime >= SCHEDULED_WAVES[nextScheduledWaveIndex].time) {
+    spawnEnemyWave(SCHEDULED_WAVES[nextScheduledWaveIndex].count);
+    nextScheduledWaveIndex++;
+  }
+  if (gameTime >= 15) {
+    recurringWaveTimer -= dt;
+    if (recurringWaveTimer <= 0) {
+      spawnEnemyWave(Math.floor(rand(10, 31)));
+      recurringWaveTimer = 5;
+    }
   }
 
   for (let i = enemies.length - 1; i >= 0; i--) {
@@ -499,23 +523,9 @@ function update(dt) {
     e.x += Math.cos(angle + wob) * e.speed * dt;
     e.y += Math.sin(angle + wob) * e.speed * dt;
 
-    // enemy firing
-    e.fireCooldown -= dt;
-    if (e.fireCooldown <= 0) {
-      const a = Math.atan2(player.y - e.y, player.x - e.x);
-      enemyBullets.push({
-        x: e.x, y: e.y,
-        vx: Math.cos(a) * 220,
-        vy: Math.sin(a) * 220,
-        r: 5,
-        life: 4,
-      });
-      e.fireCooldown = e.fireRate;
-    }
-
     // collision with player (contact damage)
     if (dist(e, player) < e.r + player.r && player.invuln <= 0) {
-      player.hp -= 10;
+      player.hp -= e.contactDamage;
       player.invuln = 0.6;
       spawnParticles(player.x, player.y, PAL.blood, 10);
       // knockback
@@ -760,6 +770,8 @@ function startGame() {
 
   bullets = []; enemyBullets = []; enemies = []; particles = []; xpOrbs = [];
   score = 0; wave = 1; waveTimer = 0; spawnTimer = 0; gameTime = 0;
+  nextScheduledWaveIndex = 0;
+  recurringWaveTimer = 5;
   gamePaused = false;
 
   document.getElementById('mainMenu').style.display = 'none';
