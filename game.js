@@ -8,11 +8,20 @@ ctx.imageSmoothingEnabled = false;
 
 const W = canvas.width, H = canvas.height;
 
+// World is larger than the viewport; camera follows the player
+const WORLD_W = 2400;
+const WORLD_H = 1600;
+const camera = { x: 0, y: 0 };
+
 // ---------------- Input ----------------
 const keys = {};
-const mouse = { x: W/2, y: H/2, down: false };
+const mouse = { x: W/2, y: H/2, down: false }; // screen-space mouse position
+const mouseWorld = { x: 0, y: 0 };             // world-space mouse position
 
-window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === 'Escape') togglePause();
+});
 window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
 canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
@@ -67,18 +76,6 @@ function drawSprite(grid, x, y, pxSize, flip = false) {
   }
 }
 
-// Player sprite: a hooded wanderer (8x8 grid)
-const PLAYER_SPRITE = [
-  [0,0,0,'#3a2a4a','#3a2a4a',0,0,0],
-  [0,0,'#3a2a4a','#3a2a4a','#3a2a4a','#3a2a4a',0,0],
-  [0,0,'#2a1a3a',PAL.eye,PAL.eye,'#2a1a3a',0,0],
-  [0,'#3a2a4a','#2a1a3a','#2a1a3a','#2a1a3a','#2a1a3a','#3a2a4a',0],
-  [0,'#3a2a4a','#5a3a6a','#5a3a6a','#5a3a6a','#5a3a6a','#3a2a4a',0],
-  [0,0,'#3a2a4a','#5a3a6a','#5a3a6a','#3a2a4a',0,0],
-  [0,0,'#2a1a3a',0,0,'#2a1a3a',0,0],
-  [0,'#1a0f2a',0,0,0,0,'#1a0f2a',0],
-];
-
 // Enemy sprite: a skeletal husk (8x8 grid)
 const ENEMY_SPRITE = [
   [0,0,'#5a3a3a','#5a3a3a','#5a3a3a','#5a3a3a',0,0],
@@ -91,20 +88,81 @@ const ENEMY_SPRITE = [
   [0,0,'#3a2020',0,0,'#3a2020',0,0],
 ];
 
+// ---------------- Weapon Definitions ----------------
+// Each weapon defines base stats, a fire function, and its own upgrade pool.
+const WEAPONS = {
+  revolver: {
+    id: 'revolver',
+    name: 'Revolver',
+    baseDamage: 18,
+    baseFireRate: 0.45, // seconds between shots
+    projectileSpeed: 620,
+    projectileColor: PAL.glowPurple,
+    projectileR: 4,
+    pierce: 0,
+    multiShot: 1,
+    spreadAngle: 0.16,
+    // weapon-specific upgrade pool (added in a future iteration)
+    upgrades: [],
+  },
+};
+
+// ---------------- Character Definitions ----------------
+const CHARACTERS = {
+  gunslinger: {
+    id: 'gunslinger',
+    name: 'Gunslinger',
+    desc: 'A quick-draw outlaw, cursed to wander the hollow with revolver in hand.',
+    weaponId: 'revolver',
+    baseStats: {
+      speed: 240,
+      maxHp: 100,
+    },
+    sprite: [
+      [0,0,0,'#3a2a4a','#3a2a4a',0,0,0],
+      [0,0,'#3a2a4a','#3a2a4a','#3a2a4a','#3a2a4a',0,0],
+      [0,0,'#2a1a3a',PAL.eye,PAL.eye,'#2a1a3a',0,0],
+      [0,'#3a2a4a','#2a1a3a','#2a1a3a','#2a1a3a','#2a1a3a','#3a2a4a',0],
+      [0,'#3a2a4a','#5a3a6a','#5a3a6a','#5a3a6a','#5a3a6a','#3a2a4a',0],
+      [0,0,'#3a2a4a','#5a3a6a','#5a3a6a','#3a2a4a',0,0],
+      [0,0,'#2a1a3a',0,0,'#2a1a3a',0,0],
+      [0,'#1a0f2a',0,0,0,0,'#1a0f2a',0],
+    ],
+  },
+};
+
+let selectedCharacterId = 'gunslinger';
+
 // ---------------- Background ----------------
 function drawBackground() {
   ctx.fillStyle = PAL.bg;
   ctx.fillRect(0, 0, W, H);
-  // subtle grid of cracked stone tiles
+
+  // subtle grid of cracked stone tiles, aligned to world space
   const tile = 64;
   ctx.strokeStyle = PAL.bgGrid;
   ctx.lineWidth = 1;
-  for (let x = 0; x < W; x += tile) {
-    for (let y = 0; y < H; y += tile) {
-      ctx.strokeRect(x, y, tile, tile);
-    }
+  const startX = -((camera.x) % tile);
+  const startY = -((camera.y) % tile);
+  for (let x = startX; x < W; x += tile) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
   }
-  // vignette
+  for (let y = startY; y < H; y += tile) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  // world boundary walls (drawn in world space, offset by camera)
+  ctx.strokeStyle = '#3a2a4a';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(-camera.x, -camera.y, WORLD_W, WORLD_H);
+
+  // vignette (screen space, always on top)
   const grad = ctx.createRadialGradient(W/2, H/2, H/3, W/2, H/2, H/0.9);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
   grad.addColorStop(1, 'rgba(0,0,0,0.65)');
@@ -113,23 +171,52 @@ function drawBackground() {
 }
 
 // ---------------- Entities ----------------
+// player and weapon runtime state are (re)initialized in startGame()
 const player = {
-  x: W/2, y: H/2, r: 14,
-  speed: 220,
+  x: WORLD_W/2, y: WORLD_H/2, r: 14,
+  speed: 240,
   hp: 100, maxHp: 100,
-  fireRate: 0.16, // seconds between shots
-  fireCooldown: 0,
   invuln: 0,
-  damage: 14,
-  pierce: 0,        // extra enemies a bullet can pass through
-  multiShot: 1,     // number of bullets fired per shot
-  spreadAngle: 0.18,// radians between bullets in multishot
   regen: 0,         // hp regenerated per second
   regenAccum: 0,
   level: 1,
   xp: 0,
   xpToNext: 20,
+  characterId: 'gunslinger',
+  sprite: CHARACTERS.gunslinger.sprite,
 };
+
+// active weapon runtime state (stats can be modified by upgrades)
+let weapon = {
+  id: 'revolver',
+  name: 'Revolver',
+  damage: 18,
+  fireRate: 0.45,
+  fireCooldown: 0,
+  projectileSpeed: 620,
+  projectileColor: PAL.glowPurple,
+  projectileR: 4,
+  pierce: 0,
+  multiShot: 1,
+  spreadAngle: 0.16,
+};
+
+function initWeaponFromDef(weaponId) {
+  const def = WEAPONS[weaponId];
+  weapon = {
+    id: def.id,
+    name: def.name,
+    damage: def.baseDamage,
+    fireRate: def.baseFireRate,
+    fireCooldown: 0,
+    projectileSpeed: def.projectileSpeed,
+    projectileColor: def.projectileColor,
+    projectileR: def.projectileR,
+    pierce: def.pierce,
+    multiShot: def.multiShot,
+    spreadAngle: def.spreadAngle,
+  };
+}
 
 let bullets = [];      // player bullets
 let enemyBullets = [];  // enemy bullets
@@ -147,13 +234,17 @@ let gameTime = 0;
 
 // ---------------- Spawning ----------------
 function spawnEnemy() {
+  // spawn just outside the camera view, within world bounds
   const edge = Math.floor(rand(0, 4));
   let x, y;
-  const margin = 40;
-  if (edge === 0) { x = rand(0, W); y = -margin; }
-  else if (edge === 1) { x = rand(0, W); y = H + margin; }
-  else if (edge === 2) { x = -margin; y = rand(0, H); }
-  else { x = W + margin; y = rand(0, H); }
+  const margin = 60;
+  if (edge === 0) { x = rand(camera.x, camera.x + W); y = camera.y - margin; }
+  else if (edge === 1) { x = rand(camera.x, camera.x + W); y = camera.y + H + margin; }
+  else if (edge === 2) { x = camera.x - margin; y = rand(camera.y, camera.y + H); }
+  else { x = camera.x + W + margin; y = rand(camera.y, camera.y + H); }
+
+  x = clamp(x, 20, WORLD_W - 20);
+  y = clamp(y, 20, WORLD_H - 20);
 
   const baseHp = 30 + wave * 6;
   enemies.push({
@@ -192,19 +283,8 @@ function spawnXpOrb(x, y, value) {
   });
 }
 
-const UPGRADE_POOL = [
-  {
-    id: 'damage',
-    name: 'Wraith Edge',
-    desc: 'Shots deal +6 damage',
-    apply: () => { player.damage += 6; },
-  },
-  {
-    id: 'firerate',
-    name: 'Frenzied Hand',
-    desc: 'Fire rate +18% faster',
-    apply: () => { player.fireRate = Math.max(0.05, player.fireRate * 0.82); },
-  },
+// General upgrades apply to the player/character (not weapon-specific)
+const GENERAL_UPGRADE_POOL = [
   {
     id: 'speed',
     name: 'Grave Step',
@@ -218,18 +298,6 @@ const UPGRADE_POOL = [
     apply: () => { player.maxHp += 25; player.hp = Math.min(player.maxHp, player.hp + 25); },
   },
   {
-    id: 'multishot',
-    name: 'Cursed Volley',
-    desc: '+1 projectile per shot',
-    apply: () => { player.multiShot += 1; },
-  },
-  {
-    id: 'pierce',
-    name: 'Soul Piercer',
-    desc: 'Bullets pierce +1 enemy',
-    apply: () => { player.pierce += 1; },
-  },
-  {
     id: 'regen',
     name: 'Hollow Vigor',
     desc: 'Regenerate 1 HP/sec',
@@ -237,9 +305,48 @@ const UPGRADE_POOL = [
   },
 ];
 
-// pick `count` unique random upgrades
+// Weapon-specific upgrade pools, keyed by weapon id.
+// Revolver upgrades will be added in a future iteration.
+const WEAPON_UPGRADE_POOLS = {
+  revolver: [
+    {
+      id: 'damage',
+      name: 'Wraith Edge',
+      desc: 'Shots deal +6 damage',
+      apply: () => { weapon.damage += 6; },
+    },
+    {
+      id: 'firerate',
+      name: 'Frenzied Hand',
+      desc: 'Fire rate +18% faster',
+      apply: () => { weapon.fireRate = Math.max(0.05, weapon.fireRate * 0.82); },
+    },
+    {
+      id: 'multishot',
+      name: 'Cursed Volley',
+      desc: '+1 projectile per shot',
+      apply: () => { weapon.multiShot += 1; },
+    },
+    {
+      id: 'pierce',
+      name: 'Soul Piercer',
+      desc: 'Bullets pierce +1 enemy',
+      apply: () => { weapon.pierce += 1; },
+    },
+  ],
+};
+
+// pick `count` unique random upgrades from the combined general + active weapon pools
 function rollUpgrades(count) {
-  const pool = [...UPGRADE_POOL];
+  const weaponPool = (WEAPON_UPGRADE_POOLS[weapon.id] || []).map(u => ({
+    ...u,
+    displayName: `${u.name} (${weapon.name})`,
+  }));
+  const generalPool = GENERAL_UPGRADE_POOL.map(u => ({
+    ...u,
+    displayName: u.name,
+  }));
+  const pool = [...generalPool, ...weaponPool];
   const picks = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     const idx = Math.floor(rand(0, pool.length));
@@ -269,7 +376,7 @@ function triggerLevelUp() {
   for (const choice of choices) {
     const btn = document.createElement('button');
     btn.className = 'upgradeBtn';
-    btn.innerHTML = `<div class="upgradeName">${choice.name}</div><div class="upgradeDesc">${choice.desc}</div>`;
+    btn.innerHTML = `<div class="upgradeName">${choice.displayName}</div><div class="upgradeDesc">${choice.desc}</div>`;
     btn.addEventListener('click', () => {
       choice.apply();
       overlay.style.display = 'none';
@@ -297,32 +404,41 @@ function update(dt) {
     player.x += (dx/len) * player.speed * dt;
     player.y += (dy/len) * player.speed * dt;
   }
-  player.x = clamp(player.x, player.r, W - player.r);
-  player.y = clamp(player.y, player.r, H - player.r);
+  player.x = clamp(player.x, player.r, WORLD_W - player.r);
+  player.y = clamp(player.y, player.r, WORLD_H - player.r);
+
+  // ---- Camera follows player, clamped to world bounds ----
+  camera.x = clamp(player.x - W/2, 0, WORLD_W - W);
+  camera.y = clamp(player.y - H/2, 0, WORLD_H - H);
+
+  // ---- World-space mouse position ----
+  mouseWorld.x = mouse.x + camera.x;
+  mouseWorld.y = mouse.y + camera.y;
 
   if (player.invuln > 0) player.invuln -= dt;
 
   // ---- Player firing ----
-  player.fireCooldown -= dt;
-  if (mouse.down && player.fireCooldown <= 0) {
-    const baseAngle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
-    const n = player.multiShot;
-    const spread = player.spreadAngle;
+  weapon.fireCooldown -= dt;
+  if (mouse.down && weapon.fireCooldown <= 0) {
+    const baseAngle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
+    const n = weapon.multiShot;
+    const spread = weapon.spreadAngle;
     const startOffset = -((n - 1) / 2) * spread;
     for (let i = 0; i < n; i++) {
       const angle = baseAngle + startOffset + i * spread;
       bullets.push({
         x: player.x + Math.cos(angle) * 18,
         y: player.y + Math.sin(angle) * 18,
-        vx: Math.cos(angle) * 520,
-        vy: Math.sin(angle) * 520,
-        r: 4,
+        vx: Math.cos(angle) * weapon.projectileSpeed,
+        vy: Math.sin(angle) * weapon.projectileSpeed,
+        r: weapon.projectileR,
+        color: weapon.projectileColor,
         life: 1.5,
-        pierceLeft: player.pierce,
+        pierceLeft: weapon.pierce,
         hitSet: new Set(),
       });
     }
-    player.fireCooldown = player.fireRate;
+    weapon.fireCooldown = weapon.fireRate;
   }
 
   // ---- HP regen ----
@@ -341,7 +457,7 @@ function update(dt) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
-    if (b.life <= 0 || b.x < -20 || b.x > W+20 || b.y < -20 || b.y > H+20) {
+    if (b.life <= 0 || b.x < -20 || b.x > WORLD_W+20 || b.y < -20 || b.y > WORLD_H+20) {
       bullets.splice(i, 1);
       continue;
     }
@@ -349,7 +465,7 @@ function update(dt) {
     for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if (b.hitSet.has(e) || dist(b, e) >= b.r + e.r) continue;
-      e.hp -= player.damage;
+      e.hp -= weapon.damage;
       spawnParticles(b.x, b.y, PAL.blood, 4);
       b.hitSet.add(e);
       if (e.hp <= 0) {
@@ -415,7 +531,7 @@ function update(dt) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
-    if (b.life <= 0 || b.x < -20 || b.x > W+20 || b.y < -20 || b.y > H+20) {
+    if (b.life <= 0 || b.x < -20 || b.x > WORLD_W+20 || b.y < -20 || b.y > WORLD_H+20) {
       enemyBullets.splice(i, 1);
       continue;
     }
@@ -480,6 +596,9 @@ function update(dt) {
 function draw() {
   drawBackground();
 
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+
   // particles (behind entities)
   for (const p of particles) {
     ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
@@ -501,8 +620,8 @@ function draw() {
 
   // player bullets
   for (const b of bullets) {
-    ctx.fillStyle = PAL.glowPurple;
-    ctx.shadowColor = PAL.glowPurple;
+    ctx.fillStyle = b.color || PAL.glowPurple;
+    ctx.shadowColor = b.color || PAL.glowPurple;
     ctx.shadowBlur = 8;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
@@ -535,9 +654,9 @@ function draw() {
 
   // player (flicker if invulnerable)
   if (!(player.invuln > 0 && Math.floor(gameTime * 20) % 2 === 0)) {
-    const angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+    const angle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
     const flip = Math.cos(angle) < 0;
-    drawSprite(PLAYER_SPRITE, player.x, player.y, 4, flip);
+    drawSprite(player.sprite, player.x, player.y, 4, flip);
   }
 
   // aim indicator line
@@ -545,8 +664,66 @@ function draw() {
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(player.x, player.y);
-  ctx.lineTo(mouse.x, mouse.y);
+  ctx.lineTo(mouseWorld.x, mouseWorld.y);
   ctx.stroke();
+
+  ctx.restore();
+}
+
+// ---------------- Pause Menu ----------------
+function togglePause() {
+  if (!gameRunning) return; // no effect on main menu
+  // don't allow pausing while a level-up choice or game-over is showing
+  if (document.getElementById('levelUp').style.display === 'block') return;
+  if (document.getElementById('gameOver').style.display === 'block') return;
+
+  if (gamePaused) {
+    // resume
+    gamePaused = false;
+    document.getElementById('pauseMenu').style.display = 'none';
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  } else {
+    // pause
+    gamePaused = true;
+    renderPauseStats();
+    document.getElementById('pauseMenu').style.display = 'block';
+  }
+}
+
+function renderPauseStats() {
+  const div = document.getElementById('pauseStats');
+  div.innerHTML = `
+    <div class="stat">Character: ${CHARACTERS[player.characterId].name}</div>
+    <div class="stat">Weapon: ${weapon.name}</div>
+    <div class="stat">Level: ${player.level}</div>
+    <div class="stat">Souls: ${score}</div>
+    <div class="stat">Depth: ${wave}</div>
+    <div class="stat">Damage: ${weapon.damage} &nbsp; Fire Rate: ${weapon.fireRate.toFixed(2)}s</div>
+    <div class="stat">Move Speed: ${Math.round(player.speed)} &nbsp; Regen: ${player.regen}/s</div>
+    <div class="stat">Multishot: ${weapon.multiShot} &nbsp; Pierce: ${weapon.pierce}</div>
+  `;
+}
+
+// ---------------- Main Menu / Character Select ----------------
+function renderCharSelect() {
+  const div = document.getElementById('charSelect');
+  div.innerHTML = '';
+  for (const charId in CHARACTERS) {
+    const c = CHARACTERS[charId];
+    const card = document.createElement('div');
+    card.className = 'charCard' + (charId === selectedCharacterId ? ' selected' : '');
+    card.innerHTML = `
+      <div class="charName">${c.name}</div>
+      <div class="charWeapon">${WEAPONS[c.weaponId].name}</div>
+      <div class="charDesc">${c.desc}</div>
+    `;
+    card.addEventListener('click', () => {
+      selectedCharacterId = charId;
+      renderCharSelect();
+    });
+    div.appendChild(card);
+  }
 }
 
 // ---------------- Game Loop ----------------
@@ -564,27 +741,31 @@ function loop(timestamp) {
 
 // ---------------- Start / Reset / End ----------------
 function startGame() {
-  player.x = W/2; player.y = H/2;
-  player.hp = 100; player.maxHp = 100;
+  const character = CHARACTERS[selectedCharacterId];
+
+  player.characterId = character.id;
+  player.sprite = character.sprite;
+  player.x = WORLD_W/2; player.y = WORLD_H/2;
+  player.speed = character.baseStats.speed;
+  player.maxHp = character.baseStats.maxHp;
+  player.hp = player.maxHp;
   player.invuln = 0;
-  player.fireCooldown = 0;
-  player.fireRate = 0.16;
-  player.damage = 14;
-  player.speed = 220;
-  player.pierce = 0;
-  player.multiShot = 1;
   player.regen = 0;
   player.regenAccum = 0;
   player.level = 1;
   player.xp = 0;
   player.xpToNext = 20;
+
+  initWeaponFromDef(character.weaponId);
+
   bullets = []; enemyBullets = []; enemies = []; particles = []; xpOrbs = [];
   score = 0; wave = 1; waveTimer = 0; spawnTimer = 0; gameTime = 0;
   gamePaused = false;
 
-  document.getElementById('title').style.display = 'none';
+  document.getElementById('mainMenu').style.display = 'none';
   document.getElementById('gameOver').style.display = 'none';
   document.getElementById('levelUp').style.display = 'none';
+  document.getElementById('pauseMenu').style.display = 'none';
   gameRunning = true;
   lastTime = performance.now();
   requestAnimationFrame(loop);
@@ -592,12 +773,26 @@ function startGame() {
 
 function endGame() {
   gameRunning = false;
+  gamePaused = false;
   document.getElementById('finalScore').textContent = `Souls collected: ${score}`;
   document.getElementById('gameOver').style.display = 'block';
 }
 
+function quitToMenu() {
+  gameRunning = false;
+  gamePaused = false;
+  document.getElementById('pauseMenu').style.display = 'none';
+  document.getElementById('gameOver').style.display = 'none';
+  document.getElementById('levelUp').style.display = 'none';
+  document.getElementById('mainMenu').style.display = 'block';
+  drawBackground();
+}
+
 document.getElementById('startBtn').addEventListener('click', startGame);
 document.getElementById('restartBtn').addEventListener('click', startGame);
+document.getElementById('resumeBtn').addEventListener('click', togglePause);
+document.getElementById('quitBtn').addEventListener('click', quitToMenu);
 
-// initial render of background behind menu
+// initial setup
+renderCharSelect();
 drawBackground();

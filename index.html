@@ -74,6 +74,37 @@
   }
   button:hover { background: #7a1f2b; }
   #hidden { display: none; }
+
+  /* Main menu / character select */
+  #mainMenu {
+    background: rgba(10, 7, 16, 0.9); padding: 30px 50px; border: 2px solid #5a4a3a;
+    pointer-events: auto; text-align: center;
+  }
+  #mainMenu h1 {
+    color: #c4453d; font-size: 36px; margin: 0 0 10px 0; letter-spacing: 4px;
+  }
+  #mainMenu p { font-size: 14px; color: #9a8a6a; line-height: 1.6; }
+  #charSelect {
+    display: flex; gap: 16px; justify-content: center; margin: 16px 0;
+  }
+  .charCard {
+    background: #1f1830; border: 2px solid #5a4a3a; padding: 14px 18px;
+    cursor: pointer; width: 160px; text-align: left;
+  }
+  .charCard.selected { border-color: #c4453d; background: #2a1a2a; }
+  .charCard .charName { font-size: 16px; font-weight: bold; color: #d8c9a3; }
+  .charCard .charWeapon { font-size: 12px; color: #9a5cff; margin-top: 4px; }
+  .charCard .charDesc { font-size: 11px; color: #9a8a6a; margin-top: 6px; line-height: 1.4; }
+
+  /* Pause menu */
+  #pauseMenu {
+    background: rgba(10, 7, 16, 0.92); padding: 30px 50px; border: 2px solid #5a4a3a;
+    pointer-events: auto; text-align: center; display: none;
+  }
+  #pauseMenu h1 {
+    color: #d8c9a3; font-size: 28px; margin: 0 0 16px 0; letter-spacing: 4px;
+  }
+  #pauseMenu .stat { font-size: 13px; color: #9a8a6a; margin: 4px 0; text-align: left; }
 </style>
 </head>
 <body>
@@ -87,12 +118,19 @@
     <div id="level">Level: 1</div>
   </div>
   <div id="center">
-    <div id="title">
+    <div id="mainMenu">
       <h1>ASHEN HOLLOW</h1>
       <p>A dark fantasy bullet-hell descent.<br>
-      WASD to move &mdash; Mouse to aim &mdash; Left Click to fire<br>
+      WASD to move &mdash; Mouse to aim &mdash; Left Click to fire &mdash; ESC to pause<br>
       Survive the endless swarm of the damned.</p>
+      <div id="charSelect"></div>
       <button id="startBtn">Descend</button>
+    </div>
+    <div id="pauseMenu">
+      <h1>PAUSED</h1>
+      <div id="pauseStats"></div>
+      <button id="resumeBtn">Resume</button>
+      <button id="quitBtn">Quit to Menu</button>
     </div>
     <div id="levelUp">
       <h1 id="levelUpTitle">Level Up - Choose a Blessing</h1>
