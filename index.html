@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ashen Hollow - Bullet Hell Roguelike</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: #0a0710; overflow: hidden;
+    font-family: 'Courier New', monospace; color: #d8c9a3;
+  }
+  #gameCanvas {
+    display: block; margin: 0 auto; background: #15101f;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  #ui {
+    position: absolute; top: 0; left: 0; width: 100%;
+    pointer-events: none; text-shadow: 2px 2px 0 #000;
+  }
+  #hud {
+    position: absolute; top: 10px; left: 10px; font-size: 18px;
+  }
+  #hpBarBg {
+    width: 200px; height: 16px; border: 2px solid #5a4a3a; background: #2a1a1a;
+    margin-top: 4px;
+  }
+  #hpBarFill {
+    height: 100%; background: linear-gradient(90deg, #7a1f2b, #c4453d); width: 100%;
+    transition: width 0.15s;
+  }
+  #center {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; text-align: center;
+  }
+  #gameOver, #title {
+    background: rgba(10, 7, 16, 0.85); padding: 30px 50px; border: 2px solid #5a4a3a;
+    pointer-events: auto;
+  }
+  #gameOver h1, #title h1 {
+    color: #c4453d; font-size: 36px; margin: 0 0 10px 0; letter-spacing: 4px;
+  }
+  #title p, #gameOver p { font-size: 14px; color: #9a8a6a; line-height: 1.6; }
+  button {
+    background: #2a1a2a; color: #d8c9a3; border: 2px solid #7a1f2b;
+    padding: 10px 24px; font-family: inherit; font-size: 16px; cursor: pointer;
+    margin-top: 10px;
+  }
+  button:hover { background: #7a1f2b; }
+  #hidden { display: none; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="960" height="640"></canvas>
+<div id="ui">
+  <div id="hud">
+    <div id="score">Souls: 0</div>
+    <div id="wave">Depth: 1</div>
+    <div id="hpBarBg"><div id="hpBarFill"></div></div>
+  </div>
+  <div id="center">
+    <div id="title">
+      <h1>ASHEN HOLLOW</h1>
+      <p>A dark fantasy bullet-hell descent.<br>
+      WASD to move &mdash; Mouse to aim &mdash; Left Click to fire<br>
+      Survive the endless swarm of the damned.</p>
+      <button id="startBtn">Descend</button>
+    </div>
+    <div id="gameOver" class="hidden hiddenEl" style="display:none;">
+      <h1>YOU HAVE FALLEN</h1>
+      <p id="finalScore">Souls collected: 0</p>
+      <button id="restartBtn">Try Again</button>
+    </div>
+  </div>
+</div>
+<script src="game.js"></script>
+</body>
+</html>
