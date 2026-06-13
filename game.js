@@ -37,6 +37,20 @@ function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 function rand(min, max) { return Math.random() * (max - min) + min; }
 
+// Apply damage to the player, absorbing with shield first if available.
+// Resets the shield recharge timer whenever damage is taken.
+function damagePlayer(amount) {
+  if (player.shield > 0) {
+    const absorbed = Math.min(player.shield, amount);
+    player.shield -= absorbed;
+    amount -= absorbed;
+  }
+  if (amount > 0) {
+    player.hp -= amount;
+  }
+  player.shieldRechargeTimer = 5; // 5 seconds of no damage before recharge starts
+}
+
 // ---------------- Palette (dark fantasy) ----------------
 const PAL = {
   bg: '#15101f',
@@ -212,6 +226,12 @@ const player = {
   characterId: 'gunslinger',
   sprite: CHARACTERS.gunslinger.sprite,
   lastMoveDir: { x: 1, y: 0 }, // for flamethrower facing direction
+  magnetLevel: 0,        // 0-5, each level +5% pickup radius
+  magnetRange: 110,      // base pickup/magnet radius
+  shieldLevel: 0,        // 0-5
+  shieldMax: 0,          // max shield HP
+  shield: 0,             // current shield HP
+  shieldRechargeTimer: 0,// counts down after taking damage; recharges when it hits 0
 };
 
 // playerWeapons: array of active weapon runtime instances.
@@ -413,6 +433,29 @@ const GENERAL_UPGRADE_POOL = [
     desc: 'Regenerate 1 HP/sec',
     apply: () => { player.regen += 1; },
   },
+  {
+    id: 'magnet',
+    name: 'Grave Magnet',
+    desc: 'Pickup radius +5%',
+    maxLevel: 5,
+    currentLevel: () => player.magnetLevel,
+    apply: () => {
+      player.magnetLevel += 1;
+      player.magnetRange = 110 * (1 + 0.05 * player.magnetLevel);
+    },
+  },
+  {
+    id: 'shield',
+    name: 'Spectral Aegis',
+    desc: '+10 shield HP (recharges after 5s unharmed)',
+    maxLevel: 5,
+    currentLevel: () => player.shieldLevel,
+    apply: () => {
+      player.shieldLevel += 1;
+      player.shieldMax += 10;
+      player.shield = player.shieldMax;
+    },
+  },
 ];
 
 // Weapon-specific upgrade pools, keyed by weapon id.
@@ -486,8 +529,9 @@ const WEAPON_SPECIAL_UPGRADES = {
 function rollUpgrades(count) {
   const pool = [];
 
-  // general upgrades always available
+  // general upgrades always available, unless capped at maxLevel
   for (const u of GENERAL_UPGRADE_POOL) {
+    if (u.maxLevel !== undefined && u.currentLevel() >= u.maxLevel) continue;
     pool.push({ ...u, displayName: u.name, kind: 'general' });
   }
 
@@ -624,9 +668,7 @@ function showSpecialNotice(notice) {
 // Applies flamethrower cone damage to enemies within range/angle of the player's facing direction.
 // Called every frame the flamethrower is actively firing.
 function applyFlameCone(w, dt) {
-  const dirX = player.lastMoveDir.x;
-  const dirY = player.lastMoveDir.y;
-  const facingAngle = Math.atan2(dirY, dirX);
+  const facingAngle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
   const halfCone = w.coneAngle / 2;
   const dmgThisFrame = w.damagePerMs * (dt * 1000); // damage per ms * ms elapsed
 
@@ -749,6 +791,16 @@ function update(dt) {
     }
   }
 
+  // ---- Shield recharge ----
+  if (player.shieldMax > 0) {
+    if (player.shieldRechargeTimer > 0) {
+      player.shieldRechargeTimer -= dt;
+    } else if (player.shield < player.shieldMax) {
+      // rapid recharge once the timer has elapsed
+      player.shield = Math.min(player.shieldMax, player.shield + player.shieldMax * 1.5 * dt);
+    }
+  }
+
   // ---- Player bullets ----
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
@@ -858,7 +910,7 @@ function update(dt) {
             vx: Math.cos(angle) * BRUTE_PROJECTILE_SPEED,
             vy: Math.sin(angle) * BRUTE_PROJECTILE_SPEED,
             r: 8,
-            life: 8,
+            life: 4,
             homing: true,
             damage: 18,
           });
@@ -907,7 +959,7 @@ function update(dt) {
 
     // collision with player (contact damage)
     if (dist(e, player) < e.r + player.r && player.invuln <= 0) {
-      player.hp -= e.contactDamage;
+      damagePlayer(e.contactDamage);
       player.invuln = 0.6;
       spawnParticles(player.x, player.y, PAL.blood, 10);
       // knockback
@@ -944,7 +996,7 @@ function update(dt) {
       continue;
     }
     if (dist(b, player) < b.r + player.r && player.invuln <= 0) {
-      player.hp -= (b.damage || 8);
+      damagePlayer(b.damage || 8);
       player.invuln = 0.6;
       spawnParticles(player.x, player.y, PAL.bloodDark, 8);
       enemyBullets.splice(i, 1);
@@ -967,7 +1019,7 @@ function update(dt) {
     const o = xpOrbs[i];
     o.bob += dt * 6;
     const d = dist(o, player);
-    const magnetRange = 110;
+    const magnetRange = player.magnetRange;
     if (d < magnetRange) {
       const a = Math.atan2(player.y - o.y, player.x - o.x);
       const pull = (1 - d / magnetRange) * 420 + 60;
@@ -995,7 +1047,18 @@ function update(dt) {
   // ---- UI ----
   document.getElementById('score').textContent = `Souls: ${score}`;
   document.getElementById('wave').textContent = `Depth: ${wave}`;
+  const totalSecs = Math.floor(gameTime);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  document.getElementById('timer').textContent = `Time: ${mins}:${secs.toString().padStart(2, '0')}`;
   document.getElementById('hpBarFill').style.width = `${clamp(player.hp / player.maxHp * 100, 0, 100)}%`;
+  const shieldBarBg = document.getElementById('shieldBarBg');
+  if (player.shieldMax > 0) {
+    shieldBarBg.style.display = 'block';
+    document.getElementById('shieldBarFill').style.width = `${clamp(player.shield / player.shieldMax * 100, 0, 100)}%`;
+  } else {
+    shieldBarBg.style.display = 'none';
+  }
   document.getElementById('level').textContent = `Level: ${player.level}`;
   document.getElementById('xpBarFill').style.width = `${clamp(player.xp / player.xpToNext * 100, 0, 100)}%`;
 }
@@ -1077,7 +1140,7 @@ function draw() {
   // flamethrower cone
   for (const w of playerWeapons) {
     if (w.type === 'cone' && w.firing) {
-      const facingAngle = Math.atan2(player.lastMoveDir.y, player.lastMoveDir.x);
+      const facingAngle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
       const halfCone = w.coneAngle / 2;
       const flicker = 0.7 + Math.random() * 0.3;
       ctx.globalAlpha = 0.55 * flicker;
@@ -1208,6 +1271,12 @@ function startGame() {
   player.level = 1;
   player.xp = 0;
   player.xpToNext = 20;
+  player.magnetLevel = 0;
+  player.magnetRange = 110;
+  player.shieldLevel = 0;
+  player.shieldMax = 0;
+  player.shield = 0;
+  player.shieldRechargeTimer = 0;
 
   playerWeapons = [createWeaponInstance(character.weaponId)];
 
