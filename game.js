@@ -94,6 +94,7 @@ const WEAPONS = {
   revolver: {
     id: 'revolver',
     name: 'Revolver',
+    type: 'projectile',
     baseDamage: 18,
     baseFireRate: 0.45, // seconds between shots
     projectileSpeed: 620,
@@ -102,8 +103,19 @@ const WEAPONS = {
     pierce: 0,
     multiShot: 1,
     spreadAngle: 0.16,
-    // weapon-specific upgrade pool (added in a future iteration)
-    upgrades: [],
+    ricochet: 0, // extra targets bullets bounce to (level 20 special)
+  },
+  flamethrower: {
+    id: 'flamethrower',
+    name: 'Flamethrower',
+    type: 'cone',
+    baseDamagePerMs: 1,       // damage per millisecond of contact
+    baseActiveTime: 1.0,      // seconds the cone is emitted
+    baseCooldown: 4.0,        // seconds before it can fire again
+    baseRange: 160,           // length of the cone
+    coneAngle: 0.6,           // radians, total cone width
+    color: '#ff6a2a',
+    burnChance: 0,            // chance to apply burn debuff (level 20 special)
   },
 };
 
@@ -184,38 +196,61 @@ const player = {
   xpToNext: 20,
   characterId: 'gunslinger',
   sprite: CHARACTERS.gunslinger.sprite,
+  lastMoveDir: { x: 1, y: 0 }, // for flamethrower facing direction
 };
 
-// active weapon runtime state (stats can be modified by upgrades)
-let weapon = {
-  id: 'revolver',
-  name: 'Revolver',
-  damage: 18,
-  fireRate: 0.45,
-  fireCooldown: 0,
-  projectileSpeed: 620,
-  projectileColor: PAL.glowPurple,
-  projectileR: 4,
-  pierce: 0,
-  multiShot: 1,
-  spreadAngle: 0.16,
-};
+// playerWeapons: array of active weapon runtime instances.
+// Each instance tracks its own level, cooldowns, and upgrade-modified stats.
+let playerWeapons = [];
 
-function initWeaponFromDef(weaponId) {
+const WEAPON_LEVEL_CAP = 20;
+
+// create a fresh runtime instance for a weapon id, using its base stats
+function createWeaponInstance(weaponId) {
   const def = WEAPONS[weaponId];
-  weapon = {
-    id: def.id,
-    name: def.name,
-    damage: def.baseDamage,
-    fireRate: def.baseFireRate,
-    fireCooldown: 0,
-    projectileSpeed: def.projectileSpeed,
-    projectileColor: def.projectileColor,
-    projectileR: def.projectileR,
-    pierce: def.pierce,
-    multiShot: def.multiShot,
-    spreadAngle: def.spreadAngle,
-  };
+  if (def.type === 'projectile') {
+    return {
+      id: def.id,
+      name: def.name,
+      type: def.type,
+      level: 1,
+      maxedSpecialApplied: false,
+      damage: def.baseDamage,
+      fireRate: def.baseFireRate,
+      fireCooldown: 0,
+      projectileSpeed: def.projectileSpeed,
+      projectileColor: def.projectileColor,
+      projectileR: def.projectileR,
+      pierce: def.pierce,
+      multiShot: def.multiShot,
+      spreadAngle: def.spreadAngle,
+      ricochet: def.ricochet,
+    };
+  } else if (def.type === 'cone') {
+    return {
+      id: def.id,
+      name: def.name,
+      type: def.type,
+      level: 1,
+      maxedSpecialApplied: false,
+      damagePerMs: def.baseDamagePerMs,
+      activeTime: def.baseActiveTime,
+      cooldown: def.baseCooldown,
+      range: def.baseRange,
+      coneAngle: def.coneAngle,
+      color: def.color,
+      burnChance: def.burnChance,
+      // runtime state
+      cooldownTimer: 0,
+      activeTimer: 0,
+      firing: false,
+    };
+  }
+}
+
+// convenience getter for the player's first weapon (used by HUD/pause display)
+function primaryWeapon() {
+  return playerWeapons[0];
 }
 
 let bullets = [];      // player bullets
@@ -321,47 +356,111 @@ const GENERAL_UPGRADE_POOL = [
 ];
 
 // Weapon-specific upgrade pools, keyed by weapon id.
-// Revolver upgrades will be added in a future iteration.
+// Each upgrade's apply() receives the weapon instance to modify.
 const WEAPON_UPGRADE_POOLS = {
   revolver: [
     {
       id: 'damage',
       name: 'Wraith Edge',
       desc: 'Shots deal +6 damage',
-      apply: () => { weapon.damage += 6; },
+      apply: (w) => { w.damage += 6; },
     },
     {
       id: 'firerate',
       name: 'Frenzied Hand',
       desc: 'Fire rate +18% faster',
-      apply: () => { weapon.fireRate = Math.max(0.05, weapon.fireRate * 0.82); },
+      apply: (w) => { w.fireRate = Math.max(0.05, w.fireRate * 0.82); },
     },
     {
       id: 'multishot',
       name: 'Cursed Volley',
       desc: '+1 projectile per shot',
-      apply: () => { weapon.multiShot += 1; },
+      apply: (w) => { w.multiShot += 1; },
     },
     {
       id: 'pierce',
       name: 'Soul Piercer',
       desc: 'Bullets pierce +1 enemy',
-      apply: () => { weapon.pierce += 1; },
+      apply: (w) => { w.pierce += 1; },
+    },
+  ],
+  flamethrower: [
+    {
+      id: 'reload',
+      name: 'Quickened Valve',
+      desc: 'Cooldown -15%',
+      apply: (w) => { w.cooldown = Math.max(0.3, w.cooldown * 0.85); },
+    },
+    {
+      id: 'tank',
+      name: 'Expanded Tank',
+      desc: 'Active time +10%',
+      apply: (w) => { w.activeTime *= 1.10; },
+    },
+    {
+      id: 'fuel',
+      name: 'Refined Fuel',
+      desc: 'Range +5%',
+      apply: (w) => { w.range *= 1.05; },
     },
   ],
 };
 
-// pick `count` unique random upgrades from the combined general + active weapon pools
+// Level-20 special upgrades, keyed by weapon id.
+// Granted automatically (not via random roll) the first time a weapon reaches level 20.
+const WEAPON_SPECIAL_UPGRADES = {
+  revolver: {
+    name: 'Ricochet Rounds',
+    desc: 'Bullets ricochet to 2 extra targets',
+    apply: (w) => { w.ricochet += 2; },
+  },
+  flamethrower: {
+    name: 'Searing Catalyst',
+    desc: '20% chance to ignite enemies, burning for 10-30 damage over 3s',
+    apply: (w) => { w.burnChance = 0.20; },
+  },
+};
+
+// pick `count` unique random upgrades from the combined general + active weapon pools.
+// Also may include a "discover new weapon" option if one is available.
 function rollUpgrades(count) {
-  const weaponPool = (WEAPON_UPGRADE_POOLS[weapon.id] || []).map(u => ({
-    ...u,
-    displayName: `${u.name} (${weapon.name})`,
-  }));
-  const generalPool = GENERAL_UPGRADE_POOL.map(u => ({
-    ...u,
-    displayName: u.name,
-  }));
-  const pool = [...generalPool, ...weaponPool];
+  const pool = [];
+
+  // general upgrades always available
+  for (const u of GENERAL_UPGRADE_POOL) {
+    pool.push({ ...u, displayName: u.name, kind: 'general' });
+  }
+
+  // weapon-specific upgrades for each owned weapon, only if below level cap
+  for (const w of playerWeapons) {
+    if (w.level < WEAPON_LEVEL_CAP) {
+      const weaponPool = WEAPON_UPGRADE_POOLS[w.id] || [];
+      for (const u of weaponPool) {
+        pool.push({
+          ...u,
+          displayName: `${u.name} (${w.name})`,
+          kind: 'weapon',
+          weaponInstance: w,
+        });
+      }
+    }
+  }
+
+  // discoverable new weapons (not yet owned)
+  for (const weaponId in WEAPONS) {
+    if (!playerWeapons.some(w => w.id === weaponId)) {
+      const def = WEAPONS[weaponId];
+      pool.push({
+        id: `discover_${weaponId}`,
+        name: def.name,
+        displayName: `New Weapon: ${def.name}`,
+        desc: weaponDiscoveryDesc(weaponId),
+        kind: 'discover',
+        apply: () => { playerWeapons.push(createWeaponInstance(weaponId)); },
+      });
+    }
+  }
+
   const picks = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     const idx = Math.floor(rand(0, pool.length));
@@ -370,6 +469,32 @@ function rollUpgrades(count) {
   }
   return picks;
 }
+
+function weaponDiscoveryDesc(weaponId) {
+  if (weaponId === 'flamethrower') {
+    return 'Wield a flamethrower, scorching foes in a cone before you';
+  }
+  if (weaponId === 'revolver') {
+    return 'Wield a trusty revolver';
+  }
+  return 'A new weapon';
+}
+
+// level up a specific weapon instance, applying its level-20 special if reached
+function levelUpWeapon(w) {
+  w.level += 1;
+  if (w.level >= WEAPON_LEVEL_CAP && !w.maxedSpecialApplied) {
+    const special = WEAPON_SPECIAL_UPGRADES[w.id];
+    if (special) {
+      special.apply(w);
+      w.maxedSpecialApplied = true;
+      // queue a notification so the player knows they got the special
+      pendingSpecialNotice = { weaponName: w.name, name: special.name, desc: special.desc };
+    }
+  }
+}
+
+let pendingSpecialNotice = null;
 
 function gainXp(amount) {
   player.xp += amount;
@@ -393,18 +518,91 @@ function triggerLevelUp() {
     btn.className = 'upgradeBtn';
     btn.innerHTML = `<div class="upgradeName">${choice.displayName}</div><div class="upgradeDesc">${choice.desc}</div>`;
     btn.addEventListener('click', () => {
-      choice.apply();
+      if (choice.kind === 'weapon') {
+        choice.apply(choice.weaponInstance);
+        levelUpWeapon(choice.weaponInstance);
+      } else {
+        choice.apply();
+      }
       overlay.style.display = 'none';
       gamePaused = false;
       lastTime = performance.now();
       requestAnimationFrame(loop);
+
+      // show a special-upgrade notice if one was just granted
+      if (pendingSpecialNotice) {
+        showSpecialNotice(pendingSpecialNotice);
+        pendingSpecialNotice = null;
+      }
     });
     optionsDiv.appendChild(btn);
   }
   overlay.style.display = 'block';
 }
 
+// brief overlay shown when a weapon reaches its level-20 special upgrade
+function showSpecialNotice(notice) {
+  gamePaused = true;
+  const overlay = document.getElementById('levelUp');
+  const optionsDiv = document.getElementById('upgradeOptions');
+  optionsDiv.innerHTML = '';
+  document.getElementById('levelUpTitle').textContent = `${notice.weaponName} Mastered!`;
+  const btn = document.createElement('button');
+  btn.className = 'upgradeBtn';
+  btn.innerHTML = `<div class="upgradeName">${notice.name}</div><div class="upgradeDesc">${notice.desc}</div>`;
+  btn.addEventListener('click', () => {
+    overlay.style.display = 'none';
+    gamePaused = false;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  });
+  optionsDiv.appendChild(btn);
+  overlay.style.display = 'block';
+}
+
 // ---------------- Update ----------------
+// Applies flamethrower cone damage to enemies within range/angle of the player's facing direction.
+// Called every frame the flamethrower is actively firing.
+function applyFlameCone(w, dt) {
+  const dirX = player.lastMoveDir.x;
+  const dirY = player.lastMoveDir.y;
+  const facingAngle = Math.atan2(dirY, dirX);
+  const halfCone = w.coneAngle / 2;
+  const dmgThisFrame = w.damagePerMs * (dt * 1000); // damage per ms * ms elapsed
+
+  for (const e of enemies) {
+    const toEnemyAngle = Math.atan2(e.y - player.y, e.x - player.x);
+    let angleDiff = toEnemyAngle - facingAngle;
+    // normalize to [-PI, PI]
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+
+    const d = dist(e, player);
+    if (d <= w.range + e.r && Math.abs(angleDiff) <= halfCone) {
+      e.hp -= dmgThisFrame;
+      // light particle feedback occasionally (not every frame, to avoid overload)
+      if (Math.random() < 0.15) {
+        spawnParticles(e.x, e.y, w.color, 1);
+      }
+      // chance to apply burn debuff (level-20 special)
+      if (w.burnChance > 0 && !e.burning && Math.random() < w.burnChance * dt * 10) {
+        e.burning = {
+          totalDamage: rand(10, 30),
+          duration: 3,
+          elapsed: 0,
+        };
+      }
+      if (e.hp <= 0) {
+        spawnParticles(e.x, e.y, PAL.bone, 14);
+        score += 10 + wave;
+        spawnXpOrb(e.x, e.y, 8 + wave);
+        const idx = enemies.indexOf(e);
+        if (idx >= 0) enemies.splice(idx, 1);
+      }
+    }
+  }
+}
+
 function update(dt) {
   gameTime += dt;
 
@@ -418,6 +616,8 @@ function update(dt) {
   if (len > 0) {
     player.x += (dx/len) * player.speed * dt;
     player.y += (dy/len) * player.speed * dt;
+    player.lastMoveDir.x = dx / len;
+    player.lastMoveDir.y = dy / len;
   }
   player.x = clamp(player.x, player.r, WORLD_W - player.r);
   player.y = clamp(player.y, player.r, WORLD_H - player.r);
@@ -432,28 +632,51 @@ function update(dt) {
 
   if (player.invuln > 0) player.invuln -= dt;
 
-  // ---- Player firing ----
-  weapon.fireCooldown -= dt;
-  if (mouse.down && weapon.fireCooldown <= 0) {
-    const baseAngle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
-    const n = weapon.multiShot;
-    const spread = weapon.spreadAngle;
-    const startOffset = -((n - 1) / 2) * spread;
-    for (let i = 0; i < n; i++) {
-      const angle = baseAngle + startOffset + i * spread;
-      bullets.push({
-        x: player.x + Math.cos(angle) * 18,
-        y: player.y + Math.sin(angle) * 18,
-        vx: Math.cos(angle) * weapon.projectileSpeed,
-        vy: Math.sin(angle) * weapon.projectileSpeed,
-        r: weapon.projectileR,
-        color: weapon.projectileColor,
-        life: 1.5,
-        pierceLeft: weapon.pierce,
-        hitSet: new Set(),
-      });
+  // ---- Player weapon firing ----
+  for (const w of playerWeapons) {
+    if (w.type === 'projectile') {
+      w.fireCooldown -= dt;
+      if (mouse.down && w.fireCooldown <= 0) {
+        const baseAngle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
+        const n = w.multiShot;
+        const spread = w.spreadAngle;
+        const startOffset = -((n - 1) / 2) * spread;
+        for (let i = 0; i < n; i++) {
+          const angle = baseAngle + startOffset + i * spread;
+          bullets.push({
+            x: player.x + Math.cos(angle) * 18,
+            y: player.y + Math.sin(angle) * 18,
+            vx: Math.cos(angle) * w.projectileSpeed,
+            vy: Math.sin(angle) * w.projectileSpeed,
+            r: w.projectileR,
+            color: w.projectileColor,
+            life: 1.5,
+            damage: w.damage,
+            pierceLeft: w.pierce,
+            ricochetLeft: w.ricochet,
+            hitSet: new Set(),
+          });
+        }
+        w.fireCooldown = w.fireRate;
+      }
+    } else if (w.type === 'cone') {
+      if (w.firing) {
+        w.activeTimer -= dt;
+        if (w.activeTimer <= 0) {
+          w.firing = false;
+          w.cooldownTimer = w.cooldown;
+        }
+      } else {
+        w.cooldownTimer -= dt;
+        if (w.cooldownTimer <= 0) {
+          w.firing = true;
+          w.activeTimer = w.activeTime;
+        }
+      }
+      if (w.firing) {
+        applyFlameCone(w, dt);
+      }
     }
-    weapon.fireCooldown = weapon.fireRate;
   }
 
   // ---- HP regen ----
@@ -480,7 +703,7 @@ function update(dt) {
     for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if (b.hitSet.has(e) || dist(b, e) >= b.r + e.r) continue;
-      e.hp -= weapon.damage;
+      e.hp -= b.damage;
       spawnParticles(b.x, b.y, PAL.blood, 4);
       b.hitSet.add(e);
       if (e.hp <= 0) {
@@ -491,6 +714,24 @@ function update(dt) {
       }
       if (b.pierceLeft > 0) {
         b.pierceLeft -= 1;
+      } else if (b.ricochetLeft > 0) {
+        // ricochet: redirect toward the nearest enemy not already hit
+        let target = null;
+        let bestDist = Infinity;
+        for (const other of enemies) {
+          if (b.hitSet.has(other)) continue;
+          const dd = dist(b, other);
+          if (dd < bestDist) { bestDist = dd; target = other; }
+        }
+        if (target) {
+          const a = Math.atan2(target.y - b.y, target.x - b.x);
+          const speed = Math.hypot(b.vx, b.vy);
+          b.vx = Math.cos(a) * speed;
+          b.vy = Math.sin(a) * speed;
+          b.ricochetLeft -= 1;
+        } else {
+          bullets.splice(i, 1);
+        }
       } else {
         bullets.splice(i, 1);
         break;
@@ -522,6 +763,27 @@ function update(dt) {
     const wob = Math.sin(e.wobble) * 0.4;
     e.x += Math.cos(angle + wob) * e.speed * dt;
     e.y += Math.sin(angle + wob) * e.speed * dt;
+
+    // burn debuff (damage over time from flamethrower special)
+    if (e.burning) {
+      const b = e.burning;
+      const dps = b.totalDamage / b.duration;
+      e.hp -= dps * dt;
+      b.elapsed += dt;
+      if (Math.random() < 0.2) {
+        spawnParticles(e.x, e.y, '#ff6a2a', 1);
+      }
+      if (b.elapsed >= b.duration) {
+        e.burning = null;
+      }
+      if (e.hp <= 0) {
+        spawnParticles(e.x, e.y, PAL.bone, 14);
+        score += 10 + wave;
+        spawnXpOrb(e.x, e.y, 8 + wave);
+        enemies.splice(i, 1);
+        continue;
+      }
+    }
 
     // collision with player (contact damage)
     if (dist(e, player) < e.r + player.r && player.invuln <= 0) {
@@ -662,6 +924,23 @@ function draw() {
     }
   }
 
+  // flamethrower cone
+  for (const w of playerWeapons) {
+    if (w.type === 'cone' && w.firing) {
+      const facingAngle = Math.atan2(player.lastMoveDir.y, player.lastMoveDir.x);
+      const halfCone = w.coneAngle / 2;
+      const flicker = 0.7 + Math.random() * 0.3;
+      ctx.globalAlpha = 0.55 * flicker;
+      ctx.fillStyle = w.color;
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.arc(player.x, player.y, w.range, facingAngle - halfCone, facingAngle + halfCone);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // player (flicker if invulnerable)
   if (!(player.invuln > 0 && Math.floor(gameTime * 20) % 2 === 0)) {
     const angle = Math.atan2(mouseWorld.y - player.y, mouseWorld.x - player.x);
@@ -703,15 +982,29 @@ function togglePause() {
 
 function renderPauseStats() {
   const div = document.getElementById('pauseStats');
+  let weaponLines = '';
+  for (const w of playerWeapons) {
+    if (w.type === 'projectile') {
+      weaponLines += `
+        <div class="stat">${w.name} (Lv ${w.level}${w.level >= WEAPON_LEVEL_CAP ? ' MAX' : ''})</div>
+        <div class="stat">&nbsp;&nbsp;Damage: ${w.damage} &nbsp; Fire Rate: ${w.fireRate.toFixed(2)}s</div>
+        <div class="stat">&nbsp;&nbsp;Multishot: ${w.multiShot} &nbsp; Pierce: ${w.pierce} &nbsp; Ricochet: ${w.ricochet}</div>
+      `;
+    } else if (w.type === 'cone') {
+      weaponLines += `
+        <div class="stat">${w.name} (Lv ${w.level}${w.level >= WEAPON_LEVEL_CAP ? ' MAX' : ''})</div>
+        <div class="stat">&nbsp;&nbsp;Active: ${w.activeTime.toFixed(2)}s &nbsp; Cooldown: ${w.cooldown.toFixed(2)}s</div>
+        <div class="stat">&nbsp;&nbsp;Range: ${Math.round(w.range)} &nbsp; Burn Chance: ${Math.round(w.burnChance * 100)}%</div>
+      `;
+    }
+  }
   div.innerHTML = `
     <div class="stat">Character: ${CHARACTERS[player.characterId].name}</div>
-    <div class="stat">Weapon: ${weapon.name}</div>
     <div class="stat">Level: ${player.level}</div>
     <div class="stat">Souls: ${score}</div>
     <div class="stat">Depth: ${wave}</div>
-    <div class="stat">Damage: ${weapon.damage} &nbsp; Fire Rate: ${weapon.fireRate.toFixed(2)}s</div>
     <div class="stat">Move Speed: ${Math.round(player.speed)} &nbsp; Regen: ${player.regen}/s</div>
-    <div class="stat">Multishot: ${weapon.multiShot} &nbsp; Pierce: ${weapon.pierce}</div>
+    ${weaponLines}
   `;
 }
 
@@ -766,7 +1059,7 @@ function startGame() {
   player.xp = 0;
   player.xpToNext = 20;
 
-  initWeaponFromDef(character.weaponId);
+  playerWeapons = [createWeaponInstance(character.weaponId)];
 
   bullets = []; enemyBullets = []; enemies = []; particles = []; xpOrbs = [];
   score = 0; wave = 1; waveTimer = 0; spawnTimer = 0; gameTime = 0;
