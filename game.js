@@ -88,6 +88,21 @@ const ENEMY_SPRITE = [
   [0,0,'#3a2020',0,0,'#3a2020',0,0],
 ];
 
+// Brute sprite: a hulking armored abomination (10x10 grid)
+const BRUTE_SPRITE = [
+  [0,0,'#3a3a4a','#3a3a4a','#3a3a4a','#3a3a4a','#3a3a4a','#3a3a4a',0,0],
+  [0,'#3a3a4a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#3a3a4a',0],
+  ['#3a3a4a','#5a5a6a',PAL.eye,'#2a1010',PAL.eye,PAL.eye,'#2a1010',PAL.eye,'#5a5a6a','#3a3a4a'],
+  ['#3a3a4a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#5a5a6a','#3a3a4a'],
+  ['#3a3a4a','#4a3a5a','#5a5a6a','#4a3a5a','#5a5a6a','#5a5a6a','#4a3a5a','#5a5a6a','#4a3a5a','#3a3a4a'],
+  [0,'#3a3a4a','#4a3a5a','#4a3a5a','#4a3a5a','#4a3a5a','#4a3a5a','#4a3a5a','#3a3a4a',0],
+  [0,'#3a3a4a','#5a5a6a','#5a5a6a',0,0,'#5a5a6a','#5a5a6a','#3a3a4a',0],
+  [0,'#3a3a4a','#5a5a6a','#5a5a6a',0,0,'#5a5a6a','#5a5a6a','#3a3a4a',0],
+  [0,'#3a3a4a','#3a3a4a',0,0,0,0,'#3a3a4a','#3a3a4a',0],
+  [0,'#1f1f2a',0,0,0,0,0,0,'#1f1f2a',0],
+];
+
+
 // ---------------- Weapon Definitions ----------------
 // Each weapon defines base stats, a fire function, and its own upgrade pool.
 const WEAPONS = {
@@ -277,9 +292,16 @@ const SCHEDULED_WAVES = [
 let nextScheduledWaveIndex = 0;
 let recurringWaveTimer = 5; // countdown until next recurring wave after t=15s
 
+// Brute wave schedule: 1 at 60s, 2 at 120s, then 1-6 every 60s from 120s onward
+const BRUTE_SCHEDULED_WAVES = [
+  { time: 60, count: 1 },
+  { time: 120, count: 2 },
+];
+let nextBruteWaveIndex = 0;
+let recurringBruteWaveTimer = 60; // countdown until next recurring brute wave after t=120s
+
 // ---------------- Spawning ----------------
-function spawnEnemy() {
-  // spawn just outside the camera view, within world bounds
+function spawnPositionOutsideView() {
   const edge = Math.floor(rand(0, 4));
   let x, y;
   const margin = 60;
@@ -290,20 +312,58 @@ function spawnEnemy() {
 
   x = clamp(x, 20, WORLD_W - 20);
   y = clamp(y, 20, WORLD_H - 20);
+  return { x, y };
+}
 
+function spawnEnemy() {
+  const { x, y } = spawnPositionOutsideView();
   const baseHp = 30 + wave * 6;
   enemies.push({
+    type: 'husk',
     x, y, r: 16,
     hp: baseHp, maxHp: baseHp,
     speed: rand(40, 70) + wave * 2,
     contactDamage: 10,
     wobble: rand(0, Math.PI * 2),
+    xpValue: 8 + wave,
+  });
+}
+
+// Brute: large, slow, high HP. Stops, charges for 0.5s, then fires a slow homing projectile
+// once the player is within its medium range.
+const BRUTE_RANGE = 380;       // medium range - detection/firing range
+const BRUTE_CHARGE_TIME = 0.5; // seconds to charge before firing
+const BRUTE_FIRE_COOLDOWN = 2.5; // seconds between shots once in range
+const BRUTE_PROJECTILE_SPEED = 110; // slow moving
+const BRUTE_PROJECTILE_TURN_RATE = 2.2; // radians/sec the homing projectile can turn
+
+function spawnBrute() {
+  const { x, y } = spawnPositionOutsideView();
+  const baseHp = 220 + wave * 25;
+  enemies.push({
+    type: 'brute',
+    x, y, r: 28,
+    hp: baseHp, maxHp: baseHp,
+    speed: rand(18, 28),
+    contactDamage: 22,
+    wobble: rand(0, Math.PI * 2),
+    xpValue: 60 + wave * 4,
+    // brute-specific state
+    state: 'approach', // 'approach' | 'charging' | 'cooldown'
+    chargeTimer: 0,
+    fireCooldown: 0,
   });
 }
 
 function spawnEnemyWave(count) {
   for (let i = 0; i < count; i++) {
     spawnEnemy();
+  }
+}
+
+function spawnBruteWave(count) {
+  for (let i = 0; i < count; i++) {
+    spawnBrute();
   }
 }
 
@@ -595,7 +655,7 @@ function applyFlameCone(w, dt) {
       if (e.hp <= 0) {
         spawnParticles(e.x, e.y, PAL.bone, 14);
         score += 10 + wave;
-        spawnXpOrb(e.x, e.y, 8 + wave);
+        spawnXpOrb(e.x, e.y, e.xpValue);
         const idx = enemies.indexOf(e);
         if (idx >= 0) enemies.splice(idx, 1);
       }
@@ -709,7 +769,7 @@ function update(dt) {
       if (e.hp <= 0) {
         spawnParticles(e.x, e.y, PAL.bone, 14);
         score += 10 + wave;
-        spawnXpOrb(e.x, e.y, 8 + wave);
+        spawnXpOrb(e.x, e.y, e.xpValue);
         enemies.splice(j, 1);
       }
       if (b.pierceLeft > 0) {
@@ -756,13 +816,73 @@ function update(dt) {
     }
   }
 
+  // Brute waves: 1 at 60s, 2 at 120s, then 1-6 every 60s from 120s onward
+  while (nextBruteWaveIndex < BRUTE_SCHEDULED_WAVES.length &&
+         gameTime >= BRUTE_SCHEDULED_WAVES[nextBruteWaveIndex].time) {
+    spawnBruteWave(BRUTE_SCHEDULED_WAVES[nextBruteWaveIndex].count);
+    nextBruteWaveIndex++;
+  }
+  if (gameTime >= 120) {
+    recurringBruteWaveTimer -= dt;
+    if (recurringBruteWaveTimer <= 0) {
+      spawnBruteWave(Math.floor(rand(1, 7)));
+      recurringBruteWaveTimer = 60;
+    }
+  }
+
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     e.wobble += dt * 4;
     const angle = Math.atan2(player.y - e.y, player.x - e.x);
-    const wob = Math.sin(e.wobble) * 0.4;
-    e.x += Math.cos(angle + wob) * e.speed * dt;
-    e.y += Math.sin(angle + wob) * e.speed * dt;
+    const d = dist(e, player);
+
+    if (e.type === 'brute') {
+      if (e.state === 'approach') {
+        if (d <= BRUTE_RANGE) {
+          e.state = 'charging';
+          e.chargeTimer = BRUTE_CHARGE_TIME;
+        } else {
+          e.x += Math.cos(angle) * e.speed * dt;
+          e.y += Math.sin(angle) * e.speed * dt;
+        }
+      } else if (e.state === 'charging') {
+        e.chargeTimer -= dt;
+        // brief telegraph particles while charging
+        if (Math.random() < 0.3) {
+          spawnParticles(e.x, e.y, PAL.eye, 1);
+        }
+        if (e.chargeTimer <= 0) {
+          // fire a slow homing projectile toward the player
+          enemyBullets.push({
+            x: e.x, y: e.y,
+            vx: Math.cos(angle) * BRUTE_PROJECTILE_SPEED,
+            vy: Math.sin(angle) * BRUTE_PROJECTILE_SPEED,
+            r: 8,
+            life: 8,
+            homing: true,
+            damage: 18,
+          });
+          e.state = 'cooldown';
+          e.fireCooldown = BRUTE_FIRE_COOLDOWN;
+        }
+      } else if (e.state === 'cooldown') {
+        e.fireCooldown -= dt;
+        // slowly reposition while on cooldown
+        if (d > BRUTE_RANGE * 0.6) {
+          e.x += Math.cos(angle) * e.speed * dt;
+          e.y += Math.sin(angle) * e.speed * dt;
+        }
+        if (e.fireCooldown <= 0) {
+          e.state = (d <= BRUTE_RANGE) ? 'charging' : 'approach';
+          if (e.state === 'charging') e.chargeTimer = BRUTE_CHARGE_TIME;
+        }
+      }
+    } else {
+      // husk: simple chase with wobble
+      const wob = Math.sin(e.wobble) * 0.4;
+      e.x += Math.cos(angle + wob) * e.speed * dt;
+      e.y += Math.sin(angle + wob) * e.speed * dt;
+    }
 
     // burn debuff (damage over time from flamethrower special)
     if (e.burning) {
@@ -779,7 +899,7 @@ function update(dt) {
       if (e.hp <= 0) {
         spawnParticles(e.x, e.y, PAL.bone, 14);
         score += 10 + wave;
-        spawnXpOrb(e.x, e.y, 8 + wave);
+        spawnXpOrb(e.x, e.y, e.xpValue);
         enemies.splice(i, 1);
         continue;
       }
@@ -800,6 +920,22 @@ function update(dt) {
   // ---- Enemy bullets ----
   for (let i = enemyBullets.length - 1; i >= 0; i--) {
     const b = enemyBullets[i];
+
+    // homing projectiles slowly steer toward the player
+    if (b.homing) {
+      const currentAngle = Math.atan2(b.vy, b.vx);
+      const targetAngle = Math.atan2(player.y - b.y, player.x - b.x);
+      let diff = targetAngle - currentAngle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const maxTurn = BRUTE_PROJECTILE_TURN_RATE * dt;
+      const turn = clamp(diff, -maxTurn, maxTurn);
+      const newAngle = currentAngle + turn;
+      const speed = Math.hypot(b.vx, b.vy);
+      b.vx = Math.cos(newAngle) * speed;
+      b.vy = Math.sin(newAngle) * speed;
+    }
+
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
@@ -808,7 +944,7 @@ function update(dt) {
       continue;
     }
     if (dist(b, player) < b.r + player.r && player.invuln <= 0) {
-      player.hp -= 8;
+      player.hp -= (b.damage || 8);
       player.invuln = 0.6;
       spawnParticles(player.x, player.y, PAL.bloodDark, 8);
       enemyBullets.splice(i, 1);
@@ -913,10 +1049,24 @@ function draw() {
 
   // enemies
   for (const e of enemies) {
-    drawSprite(ENEMY_SPRITE, e.x, e.y, 4);
+    if (e.type === 'brute') {
+      drawSprite(BRUTE_SPRITE, e.x, e.y, 6);
+      // charging telegraph ring
+      if (e.state === 'charging') {
+        ctx.strokeStyle = PAL.eye;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.r + 6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    } else {
+      drawSprite(ENEMY_SPRITE, e.x, e.y, 4);
+    }
     // hp bar
     if (e.hp < e.maxHp) {
-      const barW = 30;
+      const barW = e.type === 'brute' ? 50 : 30;
       ctx.fillStyle = '#1a0f0f';
       ctx.fillRect(e.x - barW/2, e.y - e.r - 10, barW, 4);
       ctx.fillStyle = PAL.blood;
@@ -1065,6 +1215,8 @@ function startGame() {
   score = 0; wave = 1; waveTimer = 0; spawnTimer = 0; gameTime = 0;
   nextScheduledWaveIndex = 0;
   recurringWaveTimer = 5;
+  nextBruteWaveIndex = 0;
+  recurringBruteWaveTimer = 60;
   gamePaused = false;
 
   document.getElementById('mainMenu').style.display = 'none';
